@@ -3,14 +3,12 @@ library(picante)
 library(phytools)
 library(PhyloMeasures)
 library(ecolottery)
-#library(vegan)
 library(reshape2)
 library(ggplot2)
 library(tidyverse)
 library(visreg)
 library(ggtree)
 library(kitchen)
-#load_all("/Users/macuser/kitchen") #replace with regular package load when possible
 source("sim_MPD_functions.R")
 
 alldata <- data.frame(true = NA, predicted = NA)
@@ -31,9 +29,9 @@ for(ntaxa in c(48, 2^(6:10))){
   testdata <- allcomm[1201:2000,]
 
   Y <- trainingdata$param
-  X <- trainingdata$comm #[,-which(names(trainingdata) == "param")]
+  X <- trainingdata$comm
   valY <- testdata$param
-  valX <- testdata$comm #[,-which(names(trainingdata) == "param")]
+  valX <- testdata$comm
 
   #Choose superparameters to sweep across
   featuresweep <- 2^(4:9)
@@ -68,7 +66,6 @@ ggplot(mydata,
        aes(y=true,x=predicted)) +
   theme_bw() +
   geom_point(aes(alpha = 0.2)) +
-  #geom_errorbar(aes(xmin=CIlow95, xmax=CIhigh95))+
   geom_abline(slope=1, intercept=0, color = "blue") +
   xlab("Predicted Parameter") +
   ylab("True Parameter") +
@@ -108,7 +105,6 @@ for(ntaxa in c(48, 2^(6:10))){
          aes(y=true,x=predicted)) +
     theme_bw() +
     geom_point(aes(alpha = 0.2)) +
-    #geom_errorbar(aes(xmin=CIlow95, xmax=CIhigh95))+
     geom_abline(slope=1, intercept=0, color = "blue") +
     xlab("Predicted Parameter") +
     ylab("True Parameter") +
