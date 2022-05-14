@@ -5,7 +5,6 @@ zannetree <- read.tree('Vascular_Plants_rooted.dated.tre')
 
 zannetree <- read.tree("Zanne.angiosperm.tre")
 zannefreeze <- read.csv("MinimumFreezingExposure.csv")
-oldtips <- zannetree$tip.label
 zannetree$tip.label <- trimws(tolower(zannetree$tip.label),"both")
 zannefreeze$species <- trimws(gsub(" ","_",tolower(zannefreeze$species)),"both")
 nofreezenames <- which(is.na(match(zannetree$tip.label,zannefreeze$species)))
