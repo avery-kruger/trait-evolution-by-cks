@@ -27,7 +27,7 @@ windowsweep <- c(4^(2:6),ncol(X))#c(5*4^(0:5),ncol(X)) #c(5,10,20,40,98)
 fullsweep <- expand.grid(featuresweep,windowsweep)
 #For running only part, or incase of crashes, saves progress.
 donesweep <- as.numeric(
-  gsub("sweep([0-9]+).rds","\\1",list.files(pattern="sweep")))
+  gsub("sweep([0-9]+).rds","\\1",list.files(path="data",pattern="sweep")))
 
 #Conduct preliminary sweep
 numCores <- detectCores()
@@ -41,6 +41,8 @@ mclapply(seq(nrow(fullsweep)),
          },
          mc.cores = numCores)
 #saveRDS(mysweep,"mysweep.rds")
+
+#Consider skipping 29 and 30; they take a long time and are not optimal.
 for(i in seq(nrow(fullsweep))[-donesweep]){
   print(i)
   temp <- kitchen_sweep(X,Y,
@@ -52,16 +54,20 @@ for(i in seq(nrow(fullsweep))[-donesweep]){
   saveRDS(temp, paste0("sweep",i,".rds"))
 }
 
-allsweep_names <- list.files(pattern = "sweep")
-allsweep_index <- as.numeric(
-  gsub("sweep([0-9]+).rds","\\1",allsweep_names))
-allsweep <- list()
-fullsweep$r2 <- NA
-for(i in seq(length(allsweep_names))){
-  allsweep[[i]] <- readRDS(paste0(allsweep_names[[i]]))
-  fullsweep$r2[allsweep_index[i]] <- as.numeric(allsweep[[i]])
+#Get R2 for each combination of hyperparameters
+#Alternatively, just read the file if you have it.
+if(length(list.files(path="data","fullsweepR2.rds")) == 0){
+  allsweep_names <- paste0("data/",list.files(path = "data", pattern = "sweep"))
+  allsweep_index <- as.numeric(
+    gsub("data/sweep([0-9]+).rds","\\1",allsweep_names))
+  allsweep <- list()
+  fullsweep$r2 <- NA
+  for(i in seq(length(allsweep_names))){
+    allsweep[[i]] <- readRDS(paste0(allsweep_names[[i]]))
+    fullsweep$r2[allsweep_index[i]] <- as.numeric(allsweep[[i]])
+  }
+  saveRDS(fullsweep, "data/fullsweepR2.rds")
 }
-saveRDS(fullsweep, "fullsweepR2.rds")
 
 fullsweep <- readRDS("fullsweepR2.rds")
 
@@ -71,49 +77,52 @@ fullsweep[best.index, 1] #best feature
 fullsweep[best.index, 2] #best window
 
 ###Use the best performing model to predict values for the validation data
-if("validation100.rds" %in% list.files()){
-  mydata <- readRDS("validation100.rds")
+if("validation_bootstrap100.rds" %in% list.files()){
+  mydata <- readRDS("data/validation_bootstrap100.rds")
 } else{mydata <- data.frame(true = valY)}
-for(i in ncol(mydata):100){
-  bestmodelpredictions <- kitchen_prediction(X,
-                                             Y,
-                                             valX,
-                                             fullsweep[best.index, 1],
-                                             fullsweep[best.index, 2],
-                                             verbose = T,
-                                             bootstrap = 100,
-                                             write_progress = "validation_bootstrap100.rds",
-                                             ncores = numCores)
+if(ncol(mydata) < 100){
+  for(i in ncol(mydata):100){
+    bestmodelpredictions <- kitchen_prediction(X,
+                                               Y,
+                                               valX,
+                                               fullsweep[best.index, 1],
+                                               fullsweep[best.index, 2],
+                                               verbose = T,
+                                               bootstrap = 100,
+                                               write_progress = "data/validation_bootstrap100.rds",
+                                               ncores = numCores)
 
-  mydata[,paste0("predicted",i)] <- bestmodelpredictions[[1]][[1]]
-  saveRDS(mydata, "validation_bootstrap100.rds")
-  print(paste0(i,"/100 done"))
+    mydata[,paste0("predicted",i)] <- bestmodelpredictions[[1]][[1]]
+    saveRDS(mydata, "data/validation_bootstrap100.rds")
+    print(paste0(i,"/100 done"))
+  }
 }
 
-mydata <- readRDS("data/bestpredictions.rds")
+mydata <- readRDS("data/validation_bootstrap100.rds")
 
 ###Examine how predictions line up with true data.
-ggplot(mydata,
-       aes(y=true,x=predicted)) +
+mydata$true <- valY
+ggplot(mydata,aes(x=mean, y=true)) +
   theme_bw() +
   geom_point() +
   xlab("Predicted Parameter") +
-  ylab("True Parameter") +
-  geom_vline(xintercept = meanpred) +
-  geom_abline(0, 1)
+  ylab("True Parameter") #+
+  #geom_vline(xintercept = meanpred) +
+  #geom_abline(0, 1)
 ggsave("ZanneValidation.png")
 
-summary(lm(mydata$true ~ mydata$predicted))
+summary(lm(mydata$true ~ mydata$mean))
 #R^2 is about 0.85.
-sum(sign(mydata$true)==sign(mydata$predicted))/nrow(mydata)
+sum(sign(mydata$true)==sign(mydata$mean))/nrow(mydata)
 #~97.7% correct sign (will vary)
 
+#is this necessary? maybe remove
 #Compare with simple lm
-mylm <- lm(Y ~ ., data=X)
-summary(mylm)
-lmpred <- predict(mylm, valX)
-summary(lm(valY ~ lmpred))
-plot(valY ~ lmpred)
+# mylm <- lm(Y ~ ., data=X)
+# summary(mylm)
+# lmpred <- predict(mylm, valX)
+# summary(lm(valY ~ lmpred))
+# plot(valY ~ lmpred)
 
 ###Test w/ real Zanne data
 zannetree <- read.tree("Zanne.angiosperm.tre")
@@ -130,20 +139,7 @@ mycomm <- t(as.data.frame(mycomm, row.names = myfreeze$species))
 
 mynorm <- make_norms(fullsweep[best.index, 1],fullsweep[best.index, 2])[[1]][[1]]
 
-for(i in 1:24){
-  zanneboot <- kitchen_prediction(X,
-                                  Y,
-                                  mycomm,
-                                  fullsweep[i, 1], #4096,
-                                  fullsweep[i, 2], #64, #
-                                  verbose = T,
-                                  simplify = F,
-                                  bootstrap = NULL,
-                                  write_progress = paste0("zannepred",i,".rds"),
-                                  seed = 24375*i,
-                                  ncores = numCores)
-  print(zanneboot)
-}
+
 zanneboot <- kitchen_prediction(X,
                                 Y,
                                 mycomm,
@@ -151,25 +147,13 @@ zanneboot <- kitchen_prediction(X,
                                 fullsweep[best.index, 2],
                                 verbose = T,
                                 simplify = F,
-                                bootstrap = 74,
-                                write_progress = "zanneboot3.rds",
+                                bootstrap = 100,
+                                write_progress = "zanneboot.rds",
                                 seed = 234587,
                                 ncores = numCores)
 
-zanneboot <- kitchen_prediction(X,
-                                Y,
-                                mycomm,
-                                fullsweep[best.index, 1],
-                                fullsweep[best.index, 2],
-                                verbose = T,
-                                simplify = F,
-                                bootstrap = NULL,
-                                seed = 234587,
-                                ncores = 2)
 
-zanneboot <- readRDS("data/zanneboot.rds")
-zanneboot2 <- readRDS("data/zanneboot2.rds")
-zanneboot3 <- readRDS("data/zanneboot3.rds")
+zanneboot <- unlist(readRDS("data/zanneboot.rds"))
 zanneboot <- c(unlist(zanneboot),unlist(zanneboot2),unlist(zanneboot3))
 zanneboot <- zanneboot[!is.na(zanneboot)]
 meanpred <- mean(unlist(zanneboot), na.rm=T)
@@ -184,12 +168,14 @@ mean(mypred$pred, na.rm=T)
 
 
 mydeltas <- c(seq(0.05,0.95,.05),seq(1,40,0.5))
-zanneMPD <- c(do.call("c", lapply(mydeltas, function(x){
-  mpd.query(rescale(zannetree.trim, "delta",x), mycomm, standardize = T)})))
-names(zanneMPD) <- mydeltas
+myalphas <- c(seq(-0.5, -0.1, 0.05), seq(-.095,-0.01,0.005),seq(-0.009, 0, 0.001),
+              seq(0.001, 0.009, 0.001), seq(0.01, 0.095, 0.005), seq(0.1,0.5,0.025))
+zanneMPD <- c(do.call("c", lapply(myalphas, function(x){
+  mpd.query(rescale(zannetree.trim, "EB", a=x), mycomm, standardize = T)})))
+names(zanneMPD) <- myalphas
 
-angiocurve <- data.frame(delta = mydeltas, MPD = zanneMPD)
-ggplot(angiocurve, aes(x=delta, y = MPD)) +
+angiocurve <- data.frame(alpha = myalphas, MPD = zanneMPD)
+ggplot(angiocurve, aes(x=alpha, y = MPD)) +
   geom_line() +
   theme_bw()
 ggsave("ZanneMPDcurve.png")
