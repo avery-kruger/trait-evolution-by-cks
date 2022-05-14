@@ -11,51 +11,96 @@ library(ggtree)
 library(kitchen)
 source("sim_MPD_functions.R")
 
-allsims <- list.files(path="data",pattern="angiosim", full.names = T) %>%
-  map_dfr(readRDS)
-
+#Read in simulated data ----
 allcomm <- list.files(path="data",pattern="angiocomm", full.names = T) %>%
   map_dfr(readRDS)
-
-savedsweep <- list()
-myfiles <- list.files(path="data",pattern="sweep", full.names = T)
-for(i in seq(length(myfiles))){
-  savedsweep[[i]] <- readRDS(myfiles[i])
-}
 
 #separate data into training and validation data
 trainingdata <- allcomm[1:4000,]
 testdata <- allcomm[4001:5000,]
 
 Y <- trainingdata$param
-X <- trainingdata$comm #[,-which(names(trainingdata) == "param")]
+X <- trainingdata$comm
 valY <- testdata$param
-valX <- testdata$comm #[,-which(names(trainingdata) == "param")]
+valX <- testdata$comm
 
 #Choose superparameters to sweep across
 featuresweep <- 2^(4:9)
-windowsweep <- c(5*4^(0:5),ncol(X)) #c(5,10,20,40,98)
+windowsweep <- c(5*4^(0:5),ncol(X))
+
+fullsweep <- expand.grid(featuresweep,windowsweep)
+#For running only part, or incase of crashes, saves progress.
+donesweep <- as.numeric(
+  gsub("sweep([0-9]+).rds","\\1",list.files(path="data",pattern="sweep")))
 
 #Conduct preliminary sweep
-mysweep <- kitchen_sweep(X,Y,
-                         valX,valY,
-                         featuresweep,windowsweep,
-                         verbose = T, show.plot = T)
+numCores <- detectCores()
+mclapply(seq(nrow(fullsweep)),
+         function(i){
+           temp <- kitchen_sweep(X,Y,
+                                 valX,valY,
+                                 fullsweep[i,1],fullsweep[i,2],
+                                 verbose = T, show.plot = F)
+           saveRDS(temp, paste0("data/sweep",i,".rds"))
+         },
+         mc.cores = numCores)
+
+#Run this chunk if first sweep didn't finish for some reason.
+#Consider skipping 29 and 30; they take a long time and are not optimal.
+for(i in seq(nrow(fullsweep))[-donesweep]){
+  print(i)
+  temp <- kitchen_sweep(X,Y,
+                        valX,valY,
+                        fullsweep[i,1],fullsweep[i,2],
+                        verbose = T, show.plot = F,
+                        clampoutliers = T,
+                        ncores = numCores)
+  saveRDS(temp, paste0("data/sweep",i,".rds"))
+}
+
+#Get R2 for each combination of hyperparameters
+#Alternatively, just read the file if it exists.
+if(length(list.files(path="data","fullsweepR2.rds")) == 0){
+  allsweep_names <- paste0("data/",list.files(path = "data", pattern = "sweep"))
+  allsweep_index <- as.numeric(
+    gsub("data/sweep([0-9]+).rds","\\1",allsweep_names))
+  allsweep <- list()
+  fullsweep$r2 <- NA
+  for(i in seq(length(allsweep_names))){
+    allsweep[[i]] <- readRDS(paste0(allsweep_names[[i]]))
+    fullsweep$r2[allsweep_index[i]] <- as.numeric(allsweep[[i]])
+  }
+  saveRDS(fullsweep, "data/fullsweepR2.rds")
+}
+fullsweep <- readRDS("fullsweepR2.rds")
 
 #bestR2
-best.index <- which(mysweep == max(mysweep), arr.ind = T)
-featuresweep[best.index[1]]
-windowsweep[best.index[2]]
+best.index <- which(fullsweep$r2 == max(fullsweep$r2,na.rm=T))
+fullsweep[best.index, 1] #best feature
+fullsweep[best.index, 2] #best window
 
-###Use the best performing model to predict values for the validation data
-bestmodelpredictions <- kitchen_prediction(X,
-                                           Y,
-                                           valX,
-                                           featuresweep[best.index[1]],
-                                           windowsweep[best.index[2]])
+#Validation ----
+##Use the best performing model to predict values for the validation data
+if("validation_bootstrap100.rds" %in% list.files()){
+  mydata <- readRDS("data/validation_bootstrap100.rds")
+} else{mydata <- data.frame(true = valY)}
+if(ncol(mydata) < 100){
+  for(i in ncol(mydata):100){
+    bestmodelpredictions <- kitchen_prediction(X,
+                                               Y,
+                                               valX,
+                                               fullsweep[best.index, 1],
+                                               fullsweep[best.index, 2],
+                                               verbose = T,
+                                               bootstrap = 100,
+                                               write_progress = "data/validation_bootstrap100.rds",
+                                               ncores = numCores)
 
-mydata <- data.frame(true = valY, predicted = bestmodelpredictions[[1]][[1]])
-
+    mydata[,paste0("predicted",i)] <- bestmodelpredictions[[1]][[1]]
+    saveRDS(mydata, "data/validation_bootstrap100.rds")
+    print(paste0(i,"/100 done"))
+  }
+}
 mydata <- readRDS("data/validation_bootstrap100.rds")
 mydata <- as.data.frame(mydata[[1]])
 mycols <- 1:ncol(mydata)
@@ -85,18 +130,12 @@ ggplot(mydata,
   theme(legend.position = "none")
 ggsave("ZanneValidation_bootstrap.png")
 
-summary(lm(mydata$true ~ mydata$predicted))
-#R^2 is about 0.85.
-sum(sign(mydata$true)==sign(mydata$predicted))/nrow(mydata)
-#~97.7% correct sign (will vary)
+summary(lm(mydata$true ~ mydata$mean))
+#R^2 is about 0.92.
+sum(sign(mydata$true)==sign(mydata$mean))/nrow(mydata)
+#~97.1% correct sign (will vary)
 
-#Compare with simple lm
-mylm <- lm(Y ~ ., data=X)
-summary(mylm)
-lmpred <- predict(mylm, valX)
-summary(lm(valY ~ lmpred))
-plot(valY ~ lmpred)
-
+#Predict on Known Community ----
 ###Test w/ real Zanne data
 zannetree <- read.tree("Zanne.angiosperm.tre")
 zannefreeze <- read.csv("MinimumFreezingExposure.csv")
@@ -109,34 +148,56 @@ commsize <- sum(myfreeze$Freeze.tmin.lo == "FreezingExposed")
 
 mycomm <- 1*(myfreeze$Freeze.tmin.lo == "FreezingExposed")
 mycomm <- t(as.data.frame(mycomm, row.names = myfreeze$species))
-mydeltas <- c(seq(0.05,0.95,.05),seq(1,40,0.5))
 myalphas <- c(seq(-0.5, -0.1, 0.05), seq(-.095,-0.01,0.005),seq(-0.009, 0, 0.001),
               seq(0.001, 0.009, 0.001), seq(0.01, 0.095, 0.005), seq(0.1,0.5,0.025))
 zanneMPD <- c(do.call("c", lapply(myalphas, function(x){
   mpd.query(rescale(zannetree.trim, "EB", a=x), mycomm, standardize = T)})))
 names(zanneMPD) <- myalphas
 
-#angiocurve <- data.frame(delta = mydeltas, MPD = zanneMPD)
+###Plot MPD curve of known community ----
 angiocurve <- data.frame(alpha = myalphas, MPD = zanneMPD)
 ggplot(angiocurve, aes(x=alpha, y = MPD)) +
   geom_line() +
   theme_bw()
 ggsave("ZanneMPDcurve.png")
 
-###Bootstrap predictions with 5,000 unique normal matrices using the same
-###superparameters.
-Zanne_prediction <- kitchen_prediction(X,Y,
-                                       zanneMPD,
-                                       featuresweep[best.index[1]],
-                                       windowsweep[best.index[2]],
-                                       reps=5000, simplify = T)
+###Bootstrap predictions on Zanne tree (same normal matrix)----
+zanneboot <- kitchen_prediction(X,
+                                Y,
+                                mycomm,
+                                fullsweep[best.index, 1],
+                                fullsweep[best.index, 2],
+                                verbose = T,
+                                simplify = F,
+                                bootstrap = 100,
+                                write_progress = "zanneboot.rds",
+                                seed = 234587,
+                                ncores = numCores)
+zanneboot <- unlist(readRDS("data/zanneboot.rds"))
+zanneboot <- zanneboot[!is.na(zanneboot)]
+Zanne95mean <- mean(zanneboot)
+Zanne95low <- quantile(zanneboot, 0.025)
+Zanne95high <- quantile(zanneboot, 0.975)
 
-hist(Zanne_prediction,breaks=40)
-meanpred <- mean(Zanne_prediction)
-ZannePrediction.95CI <- sort(Zanne_prediction)[c(.025*5000,.975*5000)]
-Zanne95low <- ZannePrediction.95CI[1]
-Zanne95high <- ZannePrediction.95CI[2]
+##Main CKS Plot ----
+#Plot scatter plot of predictions on validation data along with prediction of empirical data
+ggplot(mydata,
+       aes(y=true,x=mean)) +
+  theme_bw() +
+  geom_point(aes(alpha = 0.2)) +
+  geom_errorbar(aes(xmin=CIlow95, xmax=CIhigh95))+
+  geom_abline(slope=1, intercept=0, color = "blue") +
+  xlab("Predicted Parameter") +
+  ylab("True Parameter") +
+  theme(legend.position = "none") +
+  geom_vline(aes(xintercept = Zanne95low), col = 2, lty = 3, size = 0.5) +
+  geom_vline(aes(xintercept = Zanne95mean), col = 2, lty = 2, size = 1) +
+  geom_vline(aes(xintercept = Zanne95high), col = 2, lty = 3, size = 0.5) +
+  xlab(expression(paste("Predicted parameter (",italic("a"),")"))) +
+  ylab(expression(paste("True parameter (",italic("a"),")")))
+ggsave("Zanne95boot.png")
 
+##MPD Comparison ----
 ##Compare with MPD model
 BigMPD <- function(BigSimList, tree, myalphas = NULL){
   if(is.null(myalphas)){
@@ -149,24 +210,17 @@ BigMPD <- function(BigSimList, tree, myalphas = NULL){
   MPD
 }
 
-traingmpdsave #<- trainingmpd
-Ysave #<- Y
-trainingmpd <- traingmpdsave
-Y <- Ysave
+
 trainingmpd <- BigMPD(trainingdata, tree = zannetree.trim)
 testmpd <- BigMPD(testdata, tree = zannetree.trim)
-trainingmpd <- trainingmpd[-(lowonly1[8]),]
-Y <- Y[-lowonly1[8]]
 
 mpd.model <- lm(Y ~ ., data=trainingmpd)
 predict(mpd.model, zanneMPD.df)
 mpd.val <- predict(mpd.model, testmpd)
-#mpd.val <- clamp(mpd.val, min(valY))
 mpd.val.model <- lm(valY ~ mpd.val)
 summary(mpd.val.model)
-par(xpd=FALSE)
-plot(mpd.val, valY)
-abline(0, 1)
+
+
 zanneMPD.df <- as.data.frame(matrix(zanneMPD, nrow=1))
 names(zanneMPD.df) <- myalphas
 zanneMPD.prediction <- predict(mpd.model, zanneMPD.df)
@@ -197,6 +251,7 @@ mpd.data$boot.95high <- sapply(seq(nrow(boot.predict)), function(i){
 
 boot.zanneMPD.95 <- quantile(boot.zanneMPD, c(0.025,0.975))
 
+####Plot MPD predictions ----
 ggplot(mpd.data,
        aes(y=true,x=predict)) +
   theme_bw() +
@@ -211,61 +266,12 @@ ggplot(mpd.data,
   geom_vline(aes(xintercept = boot.zanneMPD.95[2]), col = 2, lty = 3, size = 0.5) +
   xlab(expression(paste("Predicted parameter (",italic("a"),")"))) +
   ylab(expression(paste("True parameter (",italic("a"),")")))
-ggsave("MPDcurve_95CI_2.png")
-
-#find outlier simulations
-out.model <- lm(order(boot.zanneMPD) ~ ., data = samplestorage)
-index.low <- which(order(boot.zanneMPD) <= 4)
-index.high <- which(order(boot.zanneMPD) %in% c(48,49,50,51))
-lownums <- seq(nrows)[seq(nrows) %in% as.vector(samplestorage[index.low[1],])]
-lownums <- lownums[lownums %in% as.vector(samplestorage[index.low[4],])]
-highnums <- seq(nrows)[seq(nrows) %in% as.vector(samplestorage[index.high[1],])]
-highnums2 <- seq(nrows)[seq(nrows) %in% as.vector(samplestorage[index.high[2],])]
-highnums3 <- seq(nrows)[seq(nrows) %in% as.vector(samplestorage[index.high[3],])]
-highnums4 <- seq(nrows)[seq(nrows) %in% as.vector(samplestorage[index.high[4],])]
-
-
-lowonly1 <- lownums[!(lownums %in% highnums)]
-lowonly1 <- lowonly1[!(lowonly1 %in% highnums4)]
-low.union <- union(unique(as.vector(samplestorage[index.low[1],])),
-                   unique(as.vector(samplestorage[index.low[2],])))
-high.union <- intersect(unique(as.vector(samplestorage[index.high[1],])),
-                   unique(as.vector(samplestorage[index.high[2],])))
-setdiff(low.union, high.union)
-
-#Plot one example of truth vs prediction with 95% confidence interval from
-#known data overlay.
-Zanne_prediction <- 0.077
-Zanne95low <- 0.075
-Zanne95high <- 0.078
-
-zanneboot <- readRDS("data/zanneboot.rds")
-zanneboot2 <- readRDS("data/zanneboot2.rds")
-zanneboot3 <- readRDS("data/zanneboot3.rds")
-zanneboot <- c(unlist(zanneboot),unlist(zanneboot2),unlist(zanneboot3))
-zanneboot <- zanneboot[!is.na(zanneboot)]
-Zanne95mean <- mean(zanneboot)
-Zanne95low <- quantile(zanneboot, 0.025)
-Zanne95high <- quantile(zanneboot, 0.975)
-
-ggplot(mydata,
-       aes(y=true,x=mean)) +
-  theme_bw() +
-  geom_point(aes(alpha = 0.2)) +
-  geom_errorbar(aes(xmin=CIlow95, xmax=CIhigh95))+
-  geom_abline(slope=1, intercept=0, color = "blue") +
-  xlab("Predicted Parameter") +
-  ylab("True Parameter") +
-  theme(legend.position = "none") +
-  geom_vline(aes(xintercept = Zanne95low), col = 2, lty = 3, size = 0.5) +
-  geom_vline(aes(xintercept = Zanne95mean), col = 2, lty = 2, size = 1) +
-  geom_vline(aes(xintercept = Zanne95high), col = 2, lty = 3, size = 0.5) +
-  xlab(expression(paste("Predicted parameter (",italic("a"),")"))) +
-  ylab(expression(paste("True parameter (",italic("a"),")")))
-ggsave("Zanne95boot.png")
+ggsave("MPDboot_95CI.png")
 
 
 
+
+###Rescaled Tree with Color----
 ###Plot tree, colored and with scale bars according to transformation
 treescale <- function(breakpoints, labels = NULL, y=1, tickheight=20,alternate = F, ...){
   #print(length(breakpoints))
