@@ -162,7 +162,8 @@ ggplot(angiocurve, aes(x=alpha, y = MPD)) +
 ggsave("ZanneMPDcurve.png")
 
 ###Bootstrap predictions on Zanne tree (same normal matrix)----
-zanneboot <- kitchen_prediction(X,
+if(length(list.files(path="data","zanneboot.Rdata")) == 0){
+  zanneboot <- kitchen_prediction(X,
                                 Y,
                                 mycomm,
                                 fullsweep[best.index, 1],
@@ -170,10 +171,11 @@ zanneboot <- kitchen_prediction(X,
                                 verbose = T,
                                 simplify = F,
                                 bootstrap = 100,
-                                write_progress = "zanneboot.rds",
+                                write_progress = "zanneboot.Rdata",
                                 seed = 234587,
                                 ncores = numCores)
-zanneboot <- unlist(readRDS("data/zanneboot.rds"))
+}
+zanneboot <- unlist(readRDS("data/zanneboot.Rdata"))
 zanneboot <- zanneboot[!is.na(zanneboot)]
 Zanne95mean <- mean(zanneboot)
 Zanne95low <- quantile(zanneboot, 0.025)
